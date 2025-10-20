@@ -1,0 +1,16 @@
+name: Pylint
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5.0.0
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31.8.1
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Nix Develop Action
+      uses: nicknovitski/nix-develop@v1.2.1
+    - run: pylint $(git ls-files '*.py')
