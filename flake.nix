@@ -12,9 +12,8 @@
   in
   {
     devShells.aarch64-linux.default = pkgs.mkShell {
-      packages = with pkgs; [
-        python312
-        python312Packages.pettingzoo
+      packages = with pkgs.python312Packages; [
+        pettingzoo
       ];
     };
   };

@@ -148,6 +148,9 @@ class CustomEnvironment(ParallelEnv[AgentID, ObsType, ActionType]):
 
     @override
     def step(self, actions: dict[AgentID, ActionType]):
+        
+
+
         observations = {agent_id: ObsType() for agent_id in self.agents}
         rewards = {agent_id: 0.0 for agent_id in self.agents}
         terminations = {agent_id: False for agent_id in self.agents}
