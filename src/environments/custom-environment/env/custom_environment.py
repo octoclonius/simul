@@ -7,10 +7,11 @@ from typing import (
 )
 
 
-AGENT_SIZE = 1.0
+AGENT_SIZE = 1
 MAX_AMMO = 30
+MOVE_SPEED = 5
 NUM_TEAMS = 2
-RELOAD_COOLDOWN = 4.0
+RELOAD_COOLDOWN = 4
 SHOOT_COOLDOWN = 0.08
 STEP_RATE = 60
 TEAM_SIZE = 2
@@ -22,21 +23,21 @@ AgentID = np.int8
 # Agents always observe their own weapon (ammo and cooldown).
 # For now, aiming and movement is instantaneous, so no need
 # to observe things like orientation or velocity.
-AgentSelfObservation = spaces.Dict({
-    "ammo": spaces.Discrete(n=MAX_AMMO),
+AgentSelfObservation = spaces.Space[spaces.Dict({
+    "ammo": spaces.Discrete(n=MAX_AMMO + 1),
     "cooldown": spaces.Box(low=0, high=RELOAD_COOLDOWN, shape=(1,), dtype=np.float32),
-})
+})]
 
 # Aim observation is relative to observer aim. TODO: could observe aim relative to allies.
 # Weapon cooldown is observable.
 # Direction of observed agent relative to observer aim.
 # Whether agent is an enemy of the observer is observable.
-AgentOtherObservation = spaces.Dict({
+AgentOtherObservation = spaces.Space[spaces.Dict({
     "aim": spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32),
-    "self": AgentSelfObservation,
     "direction": spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32),
     "is_enemy": spaces.MultiBinary(n=1),
-})
+    "self": AgentSelfObservation(),
+})]
 
 # Agents can aim, move, reload, and shoot.
 # Aiming and moving are instantaneous for now.
@@ -55,8 +56,8 @@ ACTION_SPACE = spaces.Space[ActionType(spaces={
 # TODO: the local environment should be observable (LIDAR?).
 ObsType = spaces.Dict
 OBSERVATION_SPACE = spaces.Space[ObsType(spaces={
-    "agents": spaces.Sequence(space=AgentOtherObservation, stack=True),
-    "self": AgentSelfObservation,
+    "agents": spaces.Sequence(space=AgentOtherObservation(), stack=True),
+    "self": AgentSelfObservation(),
 })]()
 
 
@@ -88,7 +89,27 @@ class CustomEnvironment(ParallelEnv[AgentID, ObsType, ActionType]):
 
 
     def _get_observations(self):
-        return {agent_id: ObsType(spaces={}) for agent_id in self.agents}
+        return {
+            agent_id: {
+                "agents": [
+                    {
+                        "aim": self._agent_aims[other_agent_id],
+                        "direction": self._agent_aims[other_agent_id],
+                        "is_enemy": self._agent_team_ids[agent_id] != self._agent_team_ids[other_agent_id],
+                        "self": {
+                            "ammo": self._agent_ammos[agent_id],
+                            "cooldown": self._agent_cooldowns[agent_id],
+                        },
+                    }
+                    for other_agent_id in self.agents[:agent_id] + self.agents[agent_id + 1:]
+                ],
+                "self": {
+                    "ammo": self._agent_ammos[agent_id],
+                    "cooldown": self._agent_cooldowns[agent_id],
+                }
+            }
+            for agent_id in self.agents
+        }
 
 
     @override
@@ -103,6 +124,14 @@ class CustomEnvironment(ParallelEnv[AgentID, ObsType, ActionType]):
 
     @override
     def reset(self, seed: int | None = None, options: dict[object, object] | None = None):
+        # Method "reset" overrides class "ParallelEnv" in an incompatible manner
+        # Return type mismatch: base method returns type "tuple[dict[AgentID, ObsType], dict[AgentID, dict[Unknown, Unknown]]]", override returns type "tuple[dict[AgentID, dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]], dict[AgentID, dict[None, None]]]"
+        # "tuple[dict[AgentID, dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]], dict[AgentID, dict[None, None]]]" is not assignable to "tuple[dict[AgentID, ObsType], dict[AgentID, dict[Unknown, Unknown]]]"
+        # Tuple entry 1 is incorrect type
+        # "dict[AgentID, dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]]" is not assignable to "dict[AgentID, ObsType]"
+        # Type parameter "_VT@dict" is invariant, but "dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]" is not the same as "ObsType"
+        # Consider switching from "dict" to "Mapping" which is covariant in the value type [reportIncompatibleMethodOverride]
+
         self._reset_agents()
         self.agents = self.possible_agents[:]
         observations = self._get_observations()
@@ -117,6 +146,11 @@ class CustomEnvironment(ParallelEnv[AgentID, ObsType, ActionType]):
             high=1,
             size=(NUM_TEAMS * TEAM_SIZE, 2),
         ).astype(dtype=np.float32)
+
+        self._agent_alive: NDArray[np.bool_] = np.ones(
+            shape=NUM_TEAMS * TEAM_SIZE,
+            dtype=np.bool_,
+        )
 
         self._agent_ammos: NDArray[np.int64] = np.full(
             shape=NUM_TEAMS * TEAM_SIZE,
@@ -143,15 +177,31 @@ class CustomEnvironment(ParallelEnv[AgentID, ObsType, ActionType]):
 
     @override
     def state(self):
-        return np.empty([])
+        # Method "state" overrides class "ParallelEnv" in an incompatible manner
+        # Return type mismatch: base method returns type "ndarray[Unknown, Unknown]", override returns type "dict[str, NDArray[float32] | NDArray[bool_] | NDArray[int64] | NDArray[int8]]"
+        # "dict[str, NDArray[float32] | NDArray[bool_] | NDArray[int64] | NDArray[int8]]" is not assignable to "ndarray[Unknown, Unknown]" [reportIncompatibleMethodOverride]
+
+        return {
+            "aims": self._agent_aims.copy(),
+            "alive": self._agent_alive.copy(),
+            "ammos": self._agent_ammos.copy(),
+            "cooldowns": self._agent_cooldowns.copy(),
+            "positions": self._agent_positions.copy(),
+            "team_ids": self._agent_team_ids.copy(),
+        }
 
 
     @override
     def step(self, actions: dict[AgentID, ActionType]):
-        
+        # Method "step" overrides class "ParallelEnv" in an incompatible manner
+        # Return type mismatch: base method returns type "tuple[dict[AgentID, ObsType], dict[AgentID, float], dict[AgentID, bool], dict[AgentID, bool], dict[AgentID, dict[Unknown, Unknown]]]", override returns type "tuple[dict[AgentID, dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]], dict[AgentID, float], dict[AgentID, bool], dict[AgentID, bool], dict[AgentID, dict[None, None]]]"
+        # "tuple[dict[AgentID, dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]], dict[AgentID, float], dict[AgentID, bool], dict[AgentID, bool], dict[AgentID, dict[None, None]]]" is not assignable to "tuple[dict[AgentID, ObsType], dict[AgentID, float], dict[AgentID, bool], dict[AgentID, bool], dict[AgentID, dict[Unknown, Unknown]]]"
+        # Tuple entry 1 is incorrect type
+        # "dict[AgentID, dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]]" is not assignable to "dict[AgentID, ObsType]"
+        # Type parameter "_VT@dict" is invariant, but "dict[str, list[dict[str, Any | dict[str, Any]]] | dict[str, Any]]" is not the same as "ObsType"
+        # Consider switching from "dict" to "Mapping" which is covariant in the value type [reportIncompatibleMethodOverride]
 
-
-        observations = {agent_id: ObsType() for agent_id in self.agents}
+        observations = self._get_observations()
         rewards = {agent_id: 0.0 for agent_id in self.agents}
         terminations = {agent_id: False for agent_id in self.agents}
         truncations = {agent_id: False for agent_id in self.agents}
